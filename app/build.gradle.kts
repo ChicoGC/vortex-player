@@ -20,6 +20,10 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Instala lado a lado com a versão oficial (como "Vortex Dev")
+            applicationIdSuffix = ".debug"
+        }
         release {
             optimization {
                 enable = true
