@@ -10,7 +10,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.vortex_player"
+        applicationId = "io.github.chicogc.vortexplayer"
         minSdk = 29
         targetSdk = 37
         versionCode = 1
