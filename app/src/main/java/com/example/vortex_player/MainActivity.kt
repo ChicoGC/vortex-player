@@ -1,6 +1,8 @@
 package com.example.vortex_player
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Typeface
@@ -11,7 +13,9 @@ import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.AudioRouting
 import android.media.MediaPlayer
+import android.media.ThumbnailUtils
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -57,6 +61,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var audioManager: AudioManager
     private lateinit var artLoader: ArtLoader
     private lateinit var coverPicker: CoverPicker
+    private lateinit var headset: HeadsetControls
+    private var notificationArt: Bitmap? = null
     private lateinit var lyricsRepository: LyricsRepository
     private lateinit var adapter: SongAdapter
 
@@ -120,6 +126,11 @@ class MainActivity : ComponentActivity() {
             if (uri != null) onFolderChosen(uri)
         }
 
+    private val requestNotifications =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) updateNotification()
+        }
+
     private val pickCoverFolder =
         registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
             if (uri != null) onCoverFolderChosen(uri)
@@ -157,6 +168,20 @@ class MainActivity : ComponentActivity() {
         audioManager = getSystemService(AudioManager::class.java)
         artLoader = ArtLoader(applicationContext)
         coverPicker = CoverPicker()
+        headset = HeadsetControls(applicationContext, object : HeadsetControls.Listener {
+            override fun onPlay() = play()
+            override fun onPause() = pause()
+            override fun onNext() = next()
+            override fun onPrevious() = previous()
+            override fun onSeek(positionMs: Long) = seekTo(positionMs.toInt())
+        })
+        PlaybackService.commands = { command ->
+            when (command) {
+                PlaybackService.ACTION_PLAY_PAUSE -> togglePlay()
+                PlaybackService.ACTION_NEXT -> next()
+                PlaybackService.ACTION_PREVIOUS -> previous()
+            }
+        }
         lyricsRepository = LyricsRepository(applicationContext)
         adapter = SongAdapter(this, artLoader, styler)
         volumeControlStream = AudioManager.STREAM_MUSIC
@@ -251,7 +276,7 @@ class MainActivity : ComponentActivity() {
             }
             override fun onStopTrackingTouch(sb: SeekBar) {
                 userSeeking = false
-                player?.seekTo(sb.progress)
+                seekTo(sb.progress)
                 lastUserScroll = 0L
                 updateLyricsHighlight(sb.progress.toLong())
             }
@@ -559,6 +584,7 @@ class MainActivity : ComponentActivity() {
 
         showSong(song, p.duration)
         updatePlayState()
+        askNotificationPermissionOnce()
         handler.removeCallbacks(updateProgress)
         handler.post(updateProgress)
     }
@@ -571,22 +597,53 @@ class MainActivity : ComponentActivity() {
         adapter.playingIndex = -1
         miniPlayer.visibility = View.GONE
         if (nowPlayingOpen) hideNowPlaying()
+        headset.stopped()
+        PlaybackService.hide(this)
+    }
+
+    /** Android 13+ hides notifications until allowed; ask once, on the first song played. */
+    private fun askNotificationPermissionOnce() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        if (prefs.getBoolean(KEY_NOTIFICATION_ASKED, false)) return
+        prefs.edit { putBoolean(KEY_NOTIFICATION_ASKED, true) }
+        requestNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
+    private fun updateNotification() {
+        val p = player ?: return
+        val song = songs.getOrNull(index) ?: return
+        PlaybackService.show(this, PlaybackService.build(this, headset.token, song, notificationArt, p.isPlaying))
     }
 
     private fun togglePlay() {
+        if (player?.isPlaying == true) pause() else play()
+    }
+
+    private fun play() {
         val p = player
         if (p == null) {
             if (songs.isNotEmpty()) playAt(index.coerceAtLeast(0))
             return
         }
-        if (p.isPlaying) {
-            p.pause()
-        } else {
-            p.start()
-            handler.removeCallbacks(updateProgress)
-            handler.post(updateProgress)
-        }
+        if (p.isPlaying) return
+        p.start()
+        handler.removeCallbacks(updateProgress)
+        handler.post(updateProgress)
         updatePlayState()
+    }
+
+    private fun pause() {
+        val p = player ?: return
+        if (p.isPlaying) p.pause()
+        updatePlayState()
+    }
+
+    private fun seekTo(positionMs: Int) {
+        val p = player ?: return
+        p.seekTo(positionMs)
+        showProgress(positionMs, p.duration)
+        headset.setState(p.isPlaying, positionMs.toLong())
     }
 
     private fun next() {
@@ -598,8 +655,7 @@ class MainActivity : ComponentActivity() {
         if (songs.isEmpty()) return
         val p = player
         if (p != null && p.currentPosition > 3000) {
-            p.seekTo(0)
-            showProgress(0, p.duration)
+            seekTo(0)
             return
         }
         playAt(if (index > 0) index - 1 else songs.size - 1)
@@ -613,6 +669,8 @@ class MainActivity : ComponentActivity() {
         miniArtist.text = song.artist
         npTitle.text = song.title
         npArtist.text = song.artist
+        notificationArt = null
+        headset.setSong(song, duration, null)
         npSeek.max = duration
         showProgress(0, duration)
         adapter.playingIndex = index
@@ -623,6 +681,9 @@ class MainActivity : ComponentActivity() {
             val backdrop = bitmap?.let { AmbientView.makeBackdrop(it) }
             libraryAmbient.setBackdrop(backdrop)
             npAmbient.setBackdrop(backdrop)
+            notificationArt = bitmap?.let { ThumbnailUtils.extractThumbnail(it, NOTIFICATION_ART_SIZE, NOTIFICATION_ART_SIZE) }
+            headset.setSong(song, duration, notificationArt)
+            updateNotification()
         }
         val cover = coverPicker.next()
         if (cover != null) {
@@ -636,6 +697,8 @@ class MainActivity : ComponentActivity() {
 
     private fun updatePlayState() {
         val playing = player?.isPlaying == true
+        player?.let { headset.setState(playing, it.currentPosition.toLong()) }
+        updateNotification()
         val icon = if (playing) R.drawable.ic_pause else R.drawable.ic_play
         miniPlayPause.setImageResource(icon)
         npPlayPause.setImageResource(icon)
@@ -732,7 +795,7 @@ class MainActivity : ComponentActivity() {
                     val view = addLyricLine(line.text.ifBlank { "♪" }, synced = true)
                     view.setOnClickListener {
                         val target = (line.timeMs + lyricsOffset).coerceAtLeast(0L)
-                        player?.seekTo(target.toInt())
+                        seekTo(target.toInt())
                         lastUserScroll = 0L
                         updateLyricsHighlight(target)
                     }
@@ -969,6 +1032,9 @@ class MainActivity : ComponentActivity() {
         audioManager.unregisterAudioDeviceCallback(deviceCallback)
         player?.release()
         player = null
+        headset.release()
+        PlaybackService.commands = null
+        PlaybackService.hide(this)
         scanExecutor.shutdownNow()
         artLoader.shutdown()
         lyricsRepository.shutdown()
@@ -979,6 +1045,8 @@ class MainActivity : ComponentActivity() {
         const val KEY_COVER_FOLDER = "cover_folder_uri"
         const val USER_SCROLL_PAUSE_MS = 3000L
         const val OFFSET_STEP_MS = 500L
+        const val NOTIFICATION_ART_SIZE = 320
+        const val KEY_NOTIFICATION_ASKED = "notification_permission_asked"
         const val KEY_SYNC_HINT = "lyrics_sync_hint_shown"
 
         val OUTPUT_TYPES = setOf(

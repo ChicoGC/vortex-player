@@ -22,6 +22,8 @@ O app ainda não tem função de importar as capas oficiais das músicas, mas pa
 - **Letras**: arquivos `.lrc` ao lado da música ou busca online no [LRCLIB](https://lrclib.net), com destaque da linha atual.
 - **Sincronização de letras**: ajuste de ±0,5 s, segure numa linha para sincronizá-la e busque outra versão da letra.
 - **Saída de áudio**: escolha entre alto-falante, fone com fio ou Bluetooth.
+- **Notificação e segundo plano**: a música continua tocando fora do app, com capa, nome e botões de voltar, pausar e pular na notificação e na tela de bloqueio.
+- **Controles do fone**: obedece aos toques do fone Bluetooth (configurados no app do fone). No fone com fio: 1 toque pausa, 2 pulam e 3 voltam. A música pausa sozinha se o fone desconectar.
 
 ## Como compilar
 
