@@ -69,6 +69,10 @@ class MainActivity : ComponentActivity() {
     private var player: MediaPlayer? = null
     private var songs: List<Song> = emptyList()
     private var index = -1
+    private var shuffle = false
+    /** Play order as song indices; [orderPos] is where the current song sits in it. */
+    private var order: List<Int> = emptyList()
+    private var orderPos = -1
     private var preferredDevice: AudioDeviceInfo? = null
     private var userSeeking = false
     private var nowPlayingOpen = false
@@ -107,6 +111,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var npVolume: SeekBar
     private lateinit var npOutputName: TextView
     private lateinit var btnLyrics: ImageButton
+    private lateinit var btnShuffle: ImageButton
     private lateinit var lyricsPanel: View
     private lateinit var lyricsScroll: ScrollView
     private lateinit var lyricsLines: LinearLayout
@@ -186,6 +191,7 @@ class MainActivity : ComponentActivity() {
         adapter = SongAdapter(this, artLoader, styler)
         volumeControlStream = AudioManager.STREAM_MUSIC
 
+        shuffle = prefs.getBoolean(KEY_SHUFFLE, false)
         bindViews()
         setupListeners()
         applyAppearance()
@@ -224,6 +230,7 @@ class MainActivity : ComponentActivity() {
         npVolume = findViewById(R.id.npVolume)
         npOutputName = findViewById(R.id.npOutputName)
         btnLyrics = findViewById(R.id.btnLyrics)
+        btnShuffle = findViewById(R.id.btnShuffle)
         lyricsPanel = findViewById(R.id.lyricsPanel)
         lyricsScroll = findViewById(R.id.lyricsScroll)
         lyricsLines = findViewById(R.id.lyricsLines)
@@ -257,6 +264,7 @@ class MainActivity : ComponentActivity() {
         findViewById<View>(R.id.npPrevious).setOnClickListener { previous() }
         findViewById<View>(R.id.btnOutput).setOnClickListener { showOutputPicker() }
         btnLyrics.setOnClickListener { toggleLyrics() }
+        btnShuffle.setOnClickListener { toggleShuffle() }
         lyricsRetry.setOnClickListener { ensureLyrics(forceRefresh = true) }
         findViewById<View>(R.id.lyricsMinus).setOnClickListener { changeLyricsOffset(lyricsOffset - OFFSET_STEP_MS) }
         findViewById<View>(R.id.lyricsPlus).setOnClickListener { changeLyricsOffset(lyricsOffset + OFFSET_STEP_MS) }
@@ -311,6 +319,7 @@ class MainActivity : ComponentActivity() {
             isAppearanceLightNavigationBars = theme.isLight
         }
         updateLyricsButton()
+        updateShuffleButton()
         lyrics?.let { renderLyrics(it) }
         settingsView?.let { bindSettings(it) }
     }
@@ -551,9 +560,45 @@ class MainActivity : ComponentActivity() {
 
     // ---------- Reprodução ----------
 
+    /** The user picked this song: the play order restarts from it. */
     private fun playAt(position: Int) {
+        rebuildOrder(position)
+        moveTo(position)
+    }
+
+    private fun moveTo(position: Int) {
         index = position
         startSong()
+    }
+
+    /**
+     * In order: the list as it is. Shuffled: [start] first, then every other song once in a random
+     * order, so nothing repeats until the whole list has played.
+     */
+    private fun rebuildOrder(start: Int) {
+        val all = songs.indices.toList()
+        order = when {
+            !shuffle -> all
+            start < 0 -> all.shuffled()
+            else -> listOf(start) + (all - start).shuffled()
+        }
+        orderPos = order.indexOf(start)
+    }
+
+    private fun toggleShuffle() {
+        shuffle = !shuffle
+        prefs.edit { putBoolean(KEY_SHUFFLE, shuffle) }
+        rebuildOrder(index)
+        updateShuffleButton()
+        Toast.makeText(
+            this, if (shuffle) "Ordem aleatória ativada" else "Ordem aleatória desativada", Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun updateShuffleButton() {
+        btnShuffle.imageTintList = ColorStateList.valueOf(
+            if (shuffle) styler.theme.accent else styler.theme.textPrimary
+        )
     }
 
     private fun startSong() {
@@ -594,6 +639,8 @@ class MainActivity : ComponentActivity() {
         player?.release()
         player = null
         index = -1
+        order = emptyList()
+        orderPos = -1
         adapter.playingIndex = -1
         miniPlayer.visibility = View.GONE
         if (nowPlayingOpen) hideNowPlaying()
@@ -623,7 +670,9 @@ class MainActivity : ComponentActivity() {
     private fun play() {
         val p = player
         if (p == null) {
-            if (songs.isNotEmpty()) playAt(index.coerceAtLeast(0))
+            if (songs.isEmpty()) return
+            // Nothing played yet: in shuffle mode, start with a random song
+            playAt(if (index >= 0) index else if (shuffle) songs.indices.random() else 0)
             return
         }
         if (p.isPlaying) return
@@ -648,7 +697,18 @@ class MainActivity : ComponentActivity() {
 
     private fun next() {
         if (songs.isEmpty()) return
-        playAt((index + 1) % songs.size)
+        if (order.size != songs.size) rebuildOrder(index)
+        orderPos++
+        if (orderPos >= order.size) {
+            // End of the list: start over (with a fresh shuffle that doesn't open with the song that just played)
+            if (shuffle) {
+                val fresh = songs.indices.shuffled().toMutableList()
+                if (fresh.size > 1 && fresh.first() == index) fresh.add(fresh.removeAt(0))
+                order = fresh
+            }
+            orderPos = 0
+        }
+        moveTo(order[orderPos])
     }
 
     private fun previous() {
@@ -658,7 +718,9 @@ class MainActivity : ComponentActivity() {
             seekTo(0)
             return
         }
-        playAt(if (index > 0) index - 1 else songs.size - 1)
+        if (order.size != songs.size) rebuildOrder(index)
+        orderPos = if (orderPos > 0) orderPos - 1 else order.size - 1
+        moveTo(order[orderPos])
     }
 
     // ---------- Tela ----------
@@ -1047,6 +1109,7 @@ class MainActivity : ComponentActivity() {
         const val OFFSET_STEP_MS = 500L
         const val NOTIFICATION_ART_SIZE = 320
         const val KEY_NOTIFICATION_ASKED = "notification_permission_asked"
+        const val KEY_SHUFFLE = "shuffle"
         const val KEY_SYNC_HINT = "lyrics_sync_hint_shown"
 
         val OUTPUT_TYPES = setOf(

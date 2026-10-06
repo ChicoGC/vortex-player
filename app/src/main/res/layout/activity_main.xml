@@ -582,6 +582,18 @@
                 android:src="@drawable/ic_lyrics"
                 android:tag="pill icon" />
 
+            <ImageButton
+                android:id="@+id/btnShuffle"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:layout_marginStart="10dp"
+                android:background="@null"
+                android:contentDescription="Ordem aleatória"
+                android:padding="11dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_shuffle"
+                android:tag="pill icon" />
+
             <LinearLayout
                 android:id="@+id/btnOutput"
                 android:layout_width="wrap_content"
