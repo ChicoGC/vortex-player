@@ -54,6 +54,7 @@ class AmbientView(context: Context, attrs: AttributeSet?) : View(context, attrs)
             addUpdateListener {
                 fade = it.animatedValue as Float
                 invalidate()
+                onFrame?.invoke()
             }
             start()
         }
@@ -98,8 +99,14 @@ class AmbientView(context: Context, attrs: AttributeSet?) : View(context, attrs)
             canvas.drawRect(0f, 0f, w, h, blobPaint)
         }
 
-        if (animated && isShown) postInvalidateOnAnimation()
+        if (animated && isShown) {
+            postInvalidateOnAnimation()
+            onFrame?.invoke()
+        }
     }
+
+    /** Called on every animated frame, so the glass on top can follow the moving colors. */
+    var onFrame: (() -> Unit)? = null
 
     private fun blobPosition(i: Int, t: Float, w: Float, h: Float): Pair<Float, Float> = when (i) {
         0 -> w * (0.15f + 0.20f * sin(t * 0.21f)) to h * (0.15f + 0.10f * cos(t * 0.17f))

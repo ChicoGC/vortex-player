@@ -24,11 +24,13 @@ import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.VelocityTracker
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
+import android.view.animation.OvershootInterpolator
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageButton
@@ -41,6 +43,7 @@ import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.edit
@@ -86,10 +89,16 @@ class MainActivity : ComponentActivity() {
     private var lyricsOffset = 0L
 
     private lateinit var root: View
+    private lateinit var bgLayer: View
+    private lateinit var contentLayer: View
+    private lateinit var libraryChrome: View
+    private lateinit var topBar: View
+    private lateinit var topBarRow: View
+    private lateinit var scrollEdge: View
+    private lateinit var listHeader: View
     private lateinit var appLogo: ImageView
     private lateinit var libraryAmbient: AmbientView
     private lateinit var folderName: TextView
-    private lateinit var listCard: View
     private lateinit var songList: ListView
     private lateinit var emptyState: View
     private lateinit var emptyText: TextView
@@ -100,6 +109,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var miniArtist: TextView
     private lateinit var miniPlayPause: ImageButton
     private lateinit var nowPlaying: View
+    private lateinit var npBgLayer: View
     private lateinit var npAmbient: AmbientView
     private lateinit var npArt: ImageView
     private lateinit var npTitle: TextView
@@ -113,6 +123,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var btnLyrics: ImageButton
     private lateinit var btnShuffle: ImageButton
     private lateinit var lyricsPanel: View
+    private lateinit var lyricsBody: View
     private lateinit var lyricsScroll: ScrollView
     private lateinit var lyricsLines: LinearLayout
     private lateinit var lyricsStatus: View
@@ -123,6 +134,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var sheetOverlay: View
     private lateinit var sheetScrim: View
     private lateinit var sheetPanel: View
+    private lateinit var sheetHandle: View
     private lateinit var sheetTitle: TextView
     private lateinit var sheetContent: FrameLayout
 
@@ -167,6 +179,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Content runs under the status/navigation bars; the floating glass handles the insets
+        enableEdgeToEdge()
         setContentView(R.layout.activity_main)
 
         styler = Styler(this)
@@ -193,8 +207,10 @@ class MainActivity : ComponentActivity() {
 
         shuffle = prefs.getBoolean(KEY_SHUFFLE, false)
         bindViews()
+        setupGlass()
         setupListeners()
         applyAppearance()
+        preferHighestRefreshRate()
 
         audioManager.registerAudioDeviceCallback(deviceCallback, handler)
         onBackPressedDispatcher.addCallback(this, backCallback)
@@ -204,12 +220,19 @@ class MainActivity : ComponentActivity() {
 
     private fun bindViews() {
         root = findViewById(R.id.root)
+        bgLayer = findViewById(R.id.bgLayer)
+        contentLayer = findViewById(R.id.contentLayer)
+        libraryChrome = findViewById(R.id.libraryChrome)
+        topBar = findViewById(R.id.topBar)
+        topBarRow = findViewById(R.id.topBarRow)
+        scrollEdge = findViewById(R.id.scrollEdge)
         appLogo = findViewById(R.id.appLogo)
         appLogo.setImageBitmap(Logo.bitmap(this))
         libraryAmbient = findViewById(R.id.libraryAmbient)
-        folderName = findViewById(R.id.folderName)
-        listCard = findViewById(R.id.listCard)
         songList = findViewById(R.id.songList)
+        listHeader = layoutInflater.inflate(R.layout.header_library, songList, false)
+        songList.addHeaderView(listHeader, null, false)
+        folderName = listHeader.findViewById(R.id.folderName)
         emptyState = findViewById(R.id.emptyState)
         emptyText = findViewById(R.id.emptyText)
         btnEmptyPick = findViewById(R.id.btnEmptyPick)
@@ -219,6 +242,7 @@ class MainActivity : ComponentActivity() {
         miniArtist = findViewById(R.id.miniArtist)
         miniPlayPause = findViewById(R.id.miniPlayPause)
         nowPlaying = findViewById(R.id.nowPlaying)
+        npBgLayer = findViewById(R.id.npBgLayer)
         npAmbient = findViewById(R.id.npAmbient)
         npArt = findViewById(R.id.npArt)
         npTitle = findViewById(R.id.npTitle)
@@ -232,6 +256,7 @@ class MainActivity : ComponentActivity() {
         btnLyrics = findViewById(R.id.btnLyrics)
         btnShuffle = findViewById(R.id.btnShuffle)
         lyricsPanel = findViewById(R.id.lyricsPanel)
+        lyricsBody = findViewById(R.id.lyricsBody)
         lyricsScroll = findViewById(R.id.lyricsScroll)
         lyricsLines = findViewById(R.id.lyricsLines)
         lyricsStatus = findViewById(R.id.lyricsStatus)
@@ -242,13 +267,78 @@ class MainActivity : ComponentActivity() {
         sheetOverlay = findViewById(R.id.sheetOverlay)
         sheetScrim = findViewById(R.id.sheetScrim)
         sheetPanel = findViewById(R.id.sheetPanel)
+        sheetHandle = findViewById(R.id.sheetHandle)
         sheetTitle = findViewById(R.id.sheetTitle)
         sheetContent = findViewById(R.id.sheetContent)
     }
 
+    // ---------- Vidro líquido ----------
+
+    /** Tells each floating glass what is behind it, and keeps it fresh when that changes. */
+    private fun setupGlass() {
+        styler.sources["lib"] = { listOf(bgLayer, contentLayer) }
+        styler.sources["np"] = { listOf(npBgLayer) }
+        styler.sources["lyrics"] = { listOf(npBgLayer, lyricsBody) }
+        styler.sources["sheet"] = {
+            // Now Playing covers the library when fully open: no need to draw what is hidden
+            if (nowPlaying.isShown && nowPlaying.translationY == 0f) listOf(nowPlaying)
+            else listOf(bgLayer, contentLayer, libraryChrome, nowPlaying)
+        }
+        val refresh = { styler.invalidateGlass() }
+        libraryAmbient.onFrame = refresh
+        npAmbient.onFrame = refresh
+        root.viewTreeObserver.addOnScrollChangedListener { styler.invalidateGlass() }
+
+        root.setOnApplyWindowInsetsListener { _, insets ->
+            val bars = insets.getInsets(android.view.WindowInsets.Type.systemBars())
+            // The row moves down, not the bar: the scroll edge behind it must also cover the status bar
+            (topBarRow.layoutParams as FrameLayout.LayoutParams).topMargin = bars.top
+            topBarRow.requestLayout()
+            scrollEdge.layoutParams.height = bars.top + topBarRow.layoutParams.height + styler.dp(28f).toInt()
+            scrollEdge.requestLayout()
+            val miniSpace = styler.dp(66f + 8f + 16f).toInt()
+            songList.setPadding(songList.paddingLeft, bars.top + topBarRow.layoutParams.height, songList.paddingRight, bars.bottom + miniSpace)
+            (miniPlayer.layoutParams as FrameLayout.LayoutParams).bottomMargin = bars.bottom + styler.dp(8f).toInt()
+            miniPlayer.requestLayout()
+            val npContent = findViewById<View>(R.id.npContent)
+            npContent.setPadding(npContent.paddingLeft, bars.top, npContent.paddingRight, bars.bottom + styler.dp(12f).toInt())
+            emptyState.setPadding(emptyState.paddingLeft, bars.top + topBarRow.layoutParams.height, emptyState.paddingRight, bars.bottom)
+            insets
+        }
+
+        songList.setOnScrollListener(object : android.widget.AbsListView.OnScrollListener {
+            override fun onScrollStateChanged(view: android.widget.AbsListView, scrollState: Int) {}
+            override fun onScroll(view: android.widget.AbsListView, first: Int, visible: Int, total: Int) {
+                updateScrollEdge()
+            }
+        })
+    }
+
+    /** iOS 26: as the large title scrolls under the bar, the bar's edge blurs what passes below. */
+    private fun updateScrollEdge() {
+        val collapse = when {
+            songList.firstVisiblePosition > 0 -> 1f
+            else -> ((songList.paddingTop - listHeader.top) / styler.dp(40f)).coerceIn(0f, 1f)
+        }
+        if (scrollEdge.alpha == collapse) return
+        scrollEdge.alpha = collapse
+        scrollEdge.visibility = if (collapse > 0f) View.VISIBLE else View.INVISIBLE
+        styler.invalidateGlass()
+    }
+
+    /** Some phones stay at 60 Hz unless the app asks for more; glass looks best at full speed. */
+    private fun preferHighestRefreshRate() {
+        val display = display ?: return
+        val current = display.mode
+        val best = display.supportedModes
+            .filter { it.physicalWidth == current.physicalWidth && it.physicalHeight == current.physicalHeight }
+            .maxByOrNull { it.refreshRate } ?: return
+        window.attributes = window.attributes.apply { preferredDisplayModeId = best.modeId }
+    }
+
     private fun setupListeners() {
         songList.adapter = adapter
-        songList.setOnItemClickListener { _, _, position, _ -> playAt(position) }
+        songList.setOnItemClickListener { _, _, position, _ -> playAt(position - songList.headerViewsCount) }
 
         findViewById<View>(R.id.btnPickFolder).setOnClickListener { pickFolder.launch(null) }
         findViewById<View>(R.id.btnSettings).setOnClickListener { openSettings() }
@@ -274,6 +364,8 @@ class MainActivity : ComponentActivity() {
             false
         }
         sheetScrim.setOnClickListener { closeSheet() }
+        findViewById<View>(R.id.sheetClose).setOnClickListener { closeSheet() }
+        setupSheetDrag()
 
         npSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
@@ -306,7 +398,7 @@ class MainActivity : ComponentActivity() {
         val theme = appearance.theme
         styler.theme = theme
         styler.glass = appearance.glass
-        styler.applyTree(root)
+        styleGlassTree()
         styler.styleSeekBar(npSeek)
         appLogo.colorFilter = Logo.colorFilter(theme)
         styler.styleSeekBar(npVolume)
@@ -327,7 +419,17 @@ class MainActivity : ComponentActivity() {
     private fun onGlassChanged(value: Float) {
         appearance.glass = value
         styler.glass = value
+        styleGlassTree()
+        adapter.notifyDataSetChanged()
+    }
+
+    /** Everything that depends on the theme and glass intensity, including views outside the tree. */
+    private fun styleGlassTree() {
         styler.applyTree(root)
+        styler.applyTree(listHeader)
+        scrollEdge.background = styler.scrollEdge(scrollEdge, "lib") {
+            topBarRow.bottom.toFloat()
+        }
     }
 
     private fun openSettings() {
@@ -374,7 +476,7 @@ class MainActivity : ComponentActivity() {
         view.findViewById<View>(R.id.coverClear).visibility = if (coverFolder != null) View.VISIBLE else View.GONE
         styler.styleSegment(view.findViewById(R.id.segCover), appearance.coverBackground)
         styler.styleSegment(view.findViewById(R.id.segGradient), !appearance.coverBackground)
-        styler.styleSeekBar(view.findViewById(R.id.glassSeek))
+        styler.styleSlider(view.findViewById(R.id.glassSeek))
         styler.styleSwitch(view.findViewById(R.id.animSwitch))
         buildThemeRow(view.findViewById(R.id.themeRow))
     }
@@ -423,6 +525,7 @@ class MainActivity : ComponentActivity() {
 
     // ---------- Painel inferior ----------
 
+    /** iOS 26 sheet: rises from below while growing from 90%, with a little spring at the end. */
     private fun openSheet(title: String, content: View, kind: Sheet) {
         sheetPanel.animate().cancel()
         sheetScrim.animate().cancel()
@@ -436,12 +539,24 @@ class MainActivity : ComponentActivity() {
         sheetOverlay.visibility = View.VISIBLE
         sheetScrim.alpha = 0f
         sheetScrim.animate().alpha(1f).setDuration(250).start()
-        sheetPanel.translationY = root.height.toFloat()
-        sheetPanel.animate()
-            .translationY(0f)
-            .setDuration(320)
-            .setInterpolator(DecelerateInterpolator())
-            .start()
+        sheetPanel.alpha = 0f
+        sheetPanel.post {
+            sheetPanel.pivotX = sheetPanel.width / 2f
+            sheetPanel.pivotY = sheetPanel.height.toFloat()
+            sheetPanel.translationY = sheetPanel.height / 2f
+            sheetPanel.scaleX = 0.9f
+            sheetPanel.scaleY = 0.9f
+            sheetPanel.alpha = 0f
+            sheetPanel.animate()
+                .translationY(0f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .alpha(1f)
+                .setDuration(460)
+                .setInterpolator(OvershootInterpolator(0.9f))
+                .setUpdateListener { styler.invalidateGlass() }
+                .start()
+        }
     }
 
     private fun closeSheet() {
@@ -452,14 +567,58 @@ class MainActivity : ComponentActivity() {
         updateBackCallback()
         sheetScrim.animate().alpha(0f).setDuration(200).start()
         sheetPanel.animate()
-            .translationY(root.height.toFloat())
+            .translationY(sheetPanel.translationY + sheetPanel.height / 2f)
+            .scaleX(0.9f)
+            .scaleY(0.9f)
+            .alpha(0f)
             .setDuration(240)
             .setInterpolator(AccelerateInterpolator())
+            .setUpdateListener { styler.invalidateGlass() }
             .withEndAction {
                 sheetOverlay.visibility = View.GONE
                 sheetContent.removeAllViews()
             }
             .start()
+    }
+
+    /** Drag the handle down to close; upwards it resists. Let go far or fast enough and it closes. */
+    private fun setupSheetDrag() {
+        var startY = 0f
+        var velocity: VelocityTracker? = null
+        sheetHandle.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    sheetPanel.animate().cancel()
+                    startY = event.rawY - sheetPanel.translationY
+                    velocity = VelocityTracker.obtain().also { it.addMovement(event) }
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    velocity?.addMovement(event)
+                    val dy = event.rawY - startY
+                    sheetPanel.translationY = if (dy < 0) dy * 0.15f else dy
+                    styler.invalidateGlass()
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    val tracker = velocity
+                    tracker?.addMovement(event)
+                    tracker?.computeCurrentVelocity(1000)
+                    val speed = tracker?.yVelocity ?: 0f
+                    tracker?.recycle()
+                    velocity = null
+                    if (sheetPanel.translationY > styler.dp(120f) || speed > styler.dp(1800f)) {
+                        closeSheet()
+                    } else {
+                        sheetPanel.animate()
+                            .translationY(0f)
+                            .setDuration(380)
+                            .setInterpolator(OvershootInterpolator(1.2f))
+                            .setUpdateListener { styler.invalidateGlass() }
+                            .start()
+                    }
+                }
+            }
+            true
+        }
     }
 
     private fun updateBackCallback() {
@@ -545,14 +704,14 @@ class MainActivity : ComponentActivity() {
                     showEmpty("Nenhuma música nessa pasta", true)
                 } else {
                     emptyState.visibility = View.GONE
-                    listCard.visibility = View.VISIBLE
                 }
             }
         }
     }
 
+    /** The list stays (its header holds the large title); only the rows go away. */
     private fun showEmpty(message: String, showButton: Boolean) {
-        listCard.visibility = View.GONE
+        adapter.songs = emptyList()
         emptyState.visibility = View.VISIBLE
         emptyText.text = message
         btnEmptyPick.visibility = if (showButton) View.VISIBLE else View.GONE
@@ -788,14 +947,24 @@ class MainActivity : ComponentActivity() {
             .translationY(0f)
             .setDuration(320)
             .setInterpolator(DecelerateInterpolator())
+            .withEndAction { if (nowPlayingOpen) setLibraryShown(false) }
             .start()
         refreshVolume()
         updateOutputLabel()
     }
 
+    /** While Now Playing covers the screen the library stops drawing (its glass and animated background). */
+    private fun setLibraryShown(shown: Boolean) {
+        val visibility = if (shown) View.VISIBLE else View.INVISIBLE
+        bgLayer.visibility = visibility
+        contentLayer.visibility = visibility
+        libraryChrome.visibility = visibility
+    }
+
     private fun hideNowPlaying() {
         nowPlayingOpen = false
         updateBackCallback()
+        setLibraryShown(true)
         nowPlaying.animate()
             .translationY(root.height.toFloat())
             .setDuration(250)
@@ -960,6 +1129,7 @@ class MainActivity : ComponentActivity() {
                         status.visibility = View.GONE
                         records.forEach { addLyricsResult(results, song, it) }
                         styler.applyTree(results)
+                        groupRows(results, dividerInset = 18f)
                     }
                 }
             }
@@ -1073,6 +1243,7 @@ class MainActivity : ComponentActivity() {
             }
             list.addView(row)
         }
+        groupRows(list, dividerInset = 50f)
         openSheet("Saída de áudio", list, Sheet.OUTPUT)
     }
 
@@ -1082,6 +1253,14 @@ class MainActivity : ComponentActivity() {
     }
 
     // ---------- Utilitários ----------
+
+    /** Turns the rows of [container] into one inset-grouped block (iOS style). */
+    private fun groupRows(container: LinearLayout, dividerInset: Float) {
+        val count = container.childCount
+        for (i in 0 until count) {
+            container.getChildAt(i).background = styler.groupRow(rowPosition(i, count), styler.dp(dividerInset))
+        }
+    }
 
     private fun formatTime(ms: Int): String {
         val totalSec = ms / 1000

@@ -16,6 +16,8 @@ class SongAdapter(
 
     private class Holder(val art: ImageView, val title: TextView, val artist: TextView) {
         var styledWith: AppTheme? = null
+        var styledGlass = -1f
+        var row: SurfaceDrawable? = null
     }
 
     var songs: List<Song> = emptyList()
@@ -39,10 +41,15 @@ class SongAdapter(
             it.tag = Holder(it.findViewById(R.id.songArt), it.findViewById(R.id.songTitle), it.findViewById(R.id.songArtist))
         }
         val holder = view.tag as Holder
-        if (holder.styledWith !== styler.theme) {
+        if (holder.styledWith !== styler.theme || holder.styledGlass != styler.glass) {
             styler.applyTree(view)
-            view.background = styler.rowBackground()
+            holder.row = styler.groupRow(RowPosition.SINGLE, styler.dp(DIVIDER_INSET)).also { view.background = it }
             holder.styledWith = styler.theme
+            holder.styledGlass = styler.glass
+        }
+        holder.row?.let {
+            it.position = rowPosition(position, songs.size)
+            it.invalidateSelf()
         }
         val song = songs[position]
         holder.title.text = song.title
@@ -50,5 +57,10 @@ class SongAdapter(
         holder.artist.text = song.artist
         artLoader.load(song.uri, 160, holder.art)
         return view
+    }
+
+    private companion object {
+        /** Dividers start after the cover: 14 padding + 52 art + 14 gap. */
+        const val DIVIDER_INSET = 80f
     }
 }

@@ -6,6 +6,7 @@ import android.graphics.ColorFilter
 import android.graphics.LinearGradient
 import android.graphics.Outline
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.RectF
@@ -32,11 +33,15 @@ class GlassDrawable(
     }
     private val rect = RectF()
     private val rimRect = RectF()
+    private val path = Path()
+    private val glow = PressGlow(this, theme.isLight)
 
     override fun onBoundsChange(bounds: Rect) {
         rect.set(bounds)
         val half = rimPaint.strokeWidth / 2
         rimRect.set(rect.left + half, rect.top + half, rect.right - half, rect.bottom - half)
+        path.reset()
+        path.addRoundRect(rect, cornerRadius(), cornerRadius(), Path.Direction.CW)
 
         val light = theme.isLight
         fillPaint.color = when (mode) {
@@ -69,9 +74,14 @@ class GlassDrawable(
         if (mode != Mode.RIM) {
             canvas.drawRoundRect(rect, r, r, fillPaint)
             canvas.drawRoundRect(rect, r, r, glossPaint)
+            glow.draw(canvas, bounds, path)
         }
         canvas.drawRoundRect(rimRect, r, r, rimPaint)
     }
+
+    override fun isStateful() = mode == Mode.GLASS
+    override fun onStateChange(state: IntArray) = mode == Mode.GLASS && glow.onStateChange(state)
+    override fun setHotspot(x: Float, y: Float) = glow.setHotspot(x, y)
 
     override fun getOutline(outline: Outline) {
         outline.setRoundRect(bounds, cornerRadius())
