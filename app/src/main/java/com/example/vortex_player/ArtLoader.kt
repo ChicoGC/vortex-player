@@ -8,9 +8,9 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.LruCache
-import android.widget.ImageView
 import java.util.concurrent.Executors
 
+/** Decodes covers off the main thread (the song's embedded art or a photo), with a memory cache. */
 class ArtLoader(private val context: Context) {
 
     private val cache = object : LruCache<String, Bitmap>(32 * 1024 * 1024) {
@@ -20,49 +20,36 @@ class ArtLoader(private val context: Context) {
     private val executor = Executors.newFixedThreadPool(2)
     private val main = Handler(Looper.getMainLooper())
 
-    fun load(uri: Uri, maxSize: Int, target: ImageView, onResult: ((Bitmap?) -> Unit)? = null) =
-        load("$uri@$maxSize", target, onResult) { decodeEmbedded(uri, maxSize) }
+    /** The picture embedded in the audio file, if any. */
+    fun embedded(uri: Uri, maxSize: Int, onResult: (Bitmap?) -> Unit) =
+        load("$uri@$maxSize", onResult) { decodeEmbedded(uri, maxSize) }
 
-    fun loadImage(uri: Uri, maxSize: Int, target: ImageView, onResult: ((Bitmap?) -> Unit)? = null) =
-        load("image:$uri@$maxSize", target, onResult) {
+    /** A photo file (cover folder). */
+    fun image(uri: Uri, maxSize: Int, onResult: (Bitmap?) -> Unit) =
+        load("image:$uri@$maxSize", onResult) {
             context.contentResolver.openInputStream(uri)?.use { decodeSampled(it.readBytes(), maxSize) }
         }
 
+    fun cachedEmbedded(uri: Uri, maxSize: Int): Bitmap? = cache.get("$uri@$maxSize")
+
     fun shutdown() = executor.shutdownNow()
 
-    private fun load(key: String, target: ImageView, onResult: ((Bitmap?) -> Unit)?, decoder: () -> Bitmap?) {
-        target.setTag(R.id.art_key, key)
-        val cached = cache.get(key)
-        if (cached != null) {
-            show(target, cached)
-            onResult?.invoke(cached)
+    private fun load(key: String, onResult: (Bitmap?) -> Unit, decoder: () -> Bitmap?) {
+        cache.get(key)?.let {
+            onResult(it)
             return
         }
-        showPlaceholder(target)
         if (key in missing) {
-            onResult?.invoke(null)
+            onResult(null)
             return
         }
         executor.execute {
             val bitmap = try { decoder() } catch (_: Exception) { null }
             main.post {
                 if (bitmap != null) cache.put(key, bitmap) else missing.add(key)
-                if (target.getTag(R.id.art_key) == key) {
-                    if (bitmap != null) show(target, bitmap)
-                    onResult?.invoke(bitmap)
-                }
+                onResult(bitmap)
             }
         }
-    }
-
-    private fun show(target: ImageView, bitmap: Bitmap) {
-        target.scaleType = ImageView.ScaleType.CENTER_CROP
-        target.setImageBitmap(bitmap)
-    }
-
-    private fun showPlaceholder(target: ImageView) {
-        target.scaleType = ImageView.ScaleType.CENTER_INSIDE
-        target.setImageResource(R.drawable.ic_music)
     }
 
     private fun decodeEmbedded(uri: Uri, maxSize: Int): Bitmap? {

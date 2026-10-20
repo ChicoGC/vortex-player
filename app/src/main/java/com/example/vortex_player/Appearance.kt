@@ -1,33 +1,48 @@
 package com.example.vortex_player
 
 import android.content.SharedPreferences
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.core.content.edit
+import com.example.vortex_player.ui.theme.BackgroundStyle
+import com.example.vortex_player.ui.theme.VortexLook
+import com.example.vortex_player.ui.theme.themeById
 import kotlin.math.roundToInt
 
+/** Theme, background and glass intensity, saved in preferences and observable by the UI. */
 class Appearance(private val prefs: SharedPreferences) {
 
-    var themeId: String
-        get() = prefs.getString(KEY_THEME, null) ?: Themes.DEFAULT.id
-        set(value) = prefs.edit { putString(KEY_THEME, value) }
+    var look by mutableStateOf(read())
+        private set
 
-    var coverBackground: Boolean
-        get() = prefs.getBoolean(KEY_COVER, true)
-        set(value) = prefs.edit { putBoolean(KEY_COVER, value) }
+    fun setTheme(id: String) = save { putString(KEY_THEME, id) }
 
-    var glass: Float
-        get() = prefs.getInt(KEY_GLASS, 50) / 100f
-        set(value) = prefs.edit { putInt(KEY_GLASS, (value * 100).roundToInt()) }
+    fun setBackground(style: BackgroundStyle) = save { putString(KEY_BACKGROUND, style.name) }
 
-    var animated: Boolean
-        get() = prefs.getBoolean(KEY_ANIMATED, true)
-        set(value) = prefs.edit { putBoolean(KEY_ANIMATED, value) }
+    fun setGlass(value: Float) = save { putInt(KEY_GLASS, (value * 100).roundToInt()) }
 
-    val theme: AppTheme get() = Themes.byId(themeId)
+    private fun save(block: SharedPreferences.Editor.() -> Unit) {
+        prefs.edit(action = block)
+        look = read()
+    }
+
+    private fun read(): VortexLook {
+        val background = prefs.getString(KEY_BACKGROUND, null)
+            ?.let { name -> BackgroundStyle.entries.firstOrNull { it.name == name } }
+            // Before this setting existed there was only "cover or gradient"
+            ?: if (prefs.getBoolean(KEY_OLD_COVER, true)) BackgroundStyle.Cover else BackgroundStyle.Gradient
+        return VortexLook(
+            theme = themeById(prefs.getString(KEY_THEME, null)),
+            background = background,
+            glass = prefs.getInt(KEY_GLASS, 40) / 100f,
+        )
+    }
 
     private companion object {
         const val KEY_THEME = "theme"
-        const val KEY_COVER = "cover_background"
+        const val KEY_BACKGROUND = "background"
+        const val KEY_OLD_COVER = "cover_background"
         const val KEY_GLASS = "glass"
-        const val KEY_ANIMATED = "animated"
     }
 }
